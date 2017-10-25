@@ -1,0 +1,249 @@
+---
+title: "Untitled"
+author: ""
+date: ""
+output: 
+  html_document:
+    fig_height: 3
+    fig_width: 5
+---
+<!-- Don't edit in between this line and the one below -->
+```{r include=FALSE}
+# Don't delete this chunk if you are using the DataComputing package
+library(DataComputing)
+```
+*Source file* 
+```{r, results='asis', echo=FALSE}
+includeSourceDocuments()
+```
+<!-- Don't edit the material above this line -->
+```{r}
+#libraries needed to instantiate
+library(ggplot2)
+library(dplyr)
+```
+
+
+```{r}
+###functions defined to build and calculate excess volatility premiums
+
+#volatility within TimeFrame
+VolIndexinTimeFrame <- function(historicalprices, TrailingDays){
+  list_of_prices <- tail(unname(unlist(historicalprices['Adj.Close'])), TrailingDays)
+  if(length(historicalprices[,2]) < length(list_of_prices)){
+     return((var(historicalprices['Adj.Close'])^0.5)[1]/100)
+  }
+  
+  else{
+    return(var(list_of_prices)^0.5/100)
+  }
+}
+
+#observe volatility levels for the last 50 days for a given year (moving index)
+VolatilityMovingIndex <- function(historicalprices, TrailingDays){
+  MovingVolatility = c()
+  counter = 0
+  index = 0
+  while(index + TrailingDays <= length(historicalprices[,2])){
+    start = index+1
+    end = TrailingDays+index
+    timeframe = end - start
+    TargetWindow = head(tail(unname(unlist(historicalprices['Adj.Close'])), end), timeframe)
+    index = index + 1
+    MovingVolatility[index] = var(TargetWindow)^0.5/100
+    if(index != 1){
+      if(Current > MovingVolatility[index]){
+        counter = counter + 1
+      }
+    }
+    else{
+      Current = MovingVolatility[1]
+    }
+  }
+  return(MovingVolatility)
+}
+
+#standard Black-Scholes Model
+#NOTES:
+# 1) time is the difference between time to expiration and present divided by 365 (i.e. (Texp - Tinit)/365)
+# 2) vol is in decimals (i.e. 20% vol is 0.2)
+BS <- function(spot, strike, rf=0.01, time, vol, type='Call'){
+  
+  d1 <- (log(spot/strike) + (rf + (vol^2)/2)*time) / (vol*sqrt(time))
+  d2 <- d1 - vol * sqrt(time) 
+  
+  if(type=='Call'){
+    return(spot * pnorm(d1) - strike*exp(-rf*time)*pnorm(d2))
+  }
+  
+  if(type=='Put'){
+    return(strike*exp(-rf*time)*pnorm(-d2)-spot*pnorm(-d1))
+  }
+}
+
+#calculate implied volatility using bisection method
+impliedvol <- function(spot, strike, rf=0.01, time, mktprice, type){
+  #initial guess
+  vol <- 0.1
+  volup <- 1
+  voldown <- 0.001
+  count <- 0
+  err <- BS(spot, strike, rf, time, vol, type) - mktprice
+  
+  while(abs(err) > 0.00001 && count < 1000){
+    if(err < 0){
+      voldown <- vol
+      vol <- (volup + vol) / 2
+    }else{
+      volup <- vol
+      vol <- (voldown + vol) / 2
+    }
+    err <- BS(spot, strike, rf, time, vol, type) - mktprice
+    count <- count + 1
+  }
+  if(count==10000){
+    return(NA)
+  }else{
+    return(vol)
+  }
+}
+
+#vega calculations
+vega <- function(spot, strike, rf=0.01, time, vol){
+  d1 <- (log(spot/strike) + (rf + (vol^2)/2)*time) / (vol*sqrt(time))
+  return(spot*dnorm(d1)*sqrt(time))
+}
+
+```
+
+```{r}
+
+#historical vol index
+#use data up to 7/28/2017
+#potentially customize this part?
+
+Location <- 'C:\\Users\\dinodwang\\Desktop\\Volatility Calc\\'
+Ticker <- 'QQQ'
+Document <- 'HistoricalQuotes'
+historicalprices <- read.csv(paste(Location, Document, Ticker, '.csv', sep=''))
+
+#average <- sum(historicalprices['Adj.Close']) / length(historicalprices[,2])
+#VolIndex <- (var(historicalprices['Adj.Close'])^0.5)[1]/100
+
+VolatilityMovingIndex <- function(historicalprices, TrailingDays){
+  MovingVolatility = c()
+  counter = 0
+  index = 0
+  while(index + TrailingDays <= length(historicalprices[,2])){
+    start = index+1
+    end = TrailingDays+index
+    timeframe = end - start
+    TargetWindow = head(tail(unname(unlist(historicalprices['Adj.Close'])), end), timeframe)
+    index = index + 1
+    MovingVolatility[index] = var(TargetWindow)^0.5/100
+    if(index != 1){
+      if(Current > MovingVolatility[index]){
+        counter = counter + 1
+      }
+    }
+    else{
+      Current = MovingVolatility[1]
+    }
+  }
+  return(MovingVolatility)
+}
+
+VolIndexinTimeFrame(historicalprices, 50)
+```
+
+```{r}
+
+###Rationale
+#The probabilities at an OTM strike calculated by individual IV or VolIndex are not significantly different. The reason is that the percent that a strike is OTM has a bigger impact than a change in IV
+#Impact of ln(S/K) > Impact of (rf + (vol^2)/2)*time)
+
+#Stock/ETF Ticker
+#preset arguments for filepath, document type, etc.
+Location <- 'C:\\Users\\dinodwang\\Desktop\\Volatility Calc\\'
+Ticker <- 'GLD'
+Document <- 'HistoricalQuotes'
+historicalprices <- read.csv(paste(Location, Document, Ticker, '.csv', sep=''))
+VolatilityTimeRange = 253
+
+#data input
+input <- paste(Location, Ticker, "optiondata - Expiration(9.15).csv", sep="")
+option_data <- read.csv(input)
+VolIndex <- VolIndexinTimeFrame(historicalprices, VolatilityTimeRange)
+
+implied_vol_premium <- function(spot, strike, rf=0.01, time, mktprice, VolIndex, type){
+  
+    OptionIV = impliedvol(spot, strike, rf, time, mktprice, type)
+    vega = vega(spot, strike, rf, time, VolIndex)
+    
+    return((OptionIV - VolIndex) * vega)
+}
+
+list_of_vol_premiums <- c()
+
+
+
+for(i in 1:length(option_data[,1])){
+  premium <- implied_vol_premium(
+                spot = option_data['Spot'][i,],
+                strike = option_data['Strike'][i,],
+                time = option_data['DTE'][i,]/365,
+                mktprice = option_data['Mkt.Price'][i,],
+                VolIndex = VolIndex,
+                type = option_data['Type'][i,]
+              )
+  
+  list_of_vol_premiums[i] <- premium
+  
+}
+
+option_data <- mutate(option_data, Premiums = list_of_vol_premiums)
+
+premiums_plot <- ggplot(option_data, aes(x = Strike, y = Premiums, col = Type)) + geom_line(size = 1.0) + geom_vline(xintercept = option_data$Spot) + geom_hline(yintercept = 0) + labs(title = option_data$Underlying)
+
+#data output
+output <- paste(Location, "VolatilityDiscrepanies", Ticker, " - Expiration(9.15).csv", sep="")
+write.csv(option_data, file = output, row.names = FALSE)
+
+premiums_plot
+```
+
+```{r}
+
+#experimental
+#code to determine what the look back window should be
+Location <- 'C:\\Users\\dinodwang\\Desktop\\Volatility Calc\\'
+Ticker <- 'SPY'
+Document <- 'HistoricalQuotes'
+historicalprices <- read.csv(paste(Location, Document, Ticker, '.csv', sep=''))
+
+#2 day minimum
+VolatilityforTrailingDays <- function(historicalprices){
+  list_of_volIndex <- c()
+  list_of_dates <- c()
+  for(i in 1:length(historicalprices[,2])){
+    list_of_prices <- tail(unname(unlist(historicalprices['Adj.Close'])), i)
+    days <- i - 1
+    list_of_volIndex[i] <- var(list_of_prices)^0.5/100
+    list_of_dates[i] <- days
+  }
+  VolatilityIndex <- tail(list_of_volIndex, length(list_of_volIndex)-1)
+  NumberofDaysOut <- tail(list_of_dates, length(list_of_dates)-1)
+  return(data.frame(NumberofDaysOut, VolatilityIndex))
+}
+
+VolIndexOverTime <- VolatilityforTrailingDays(historicalprices)
+VolPlot <- ggplot(VolIndexOverTime, aes(x=NumberofDaysOut, y=VolatilityIndex)) + geom_line()
+VolPlot
+```
+
+```{r}
+delta <- function(spot, strike, rf, time, vol){
+  d1 <- (log(spot/strike) + (rf + (vol^2)/2)*time) / (vol*sqrt(time))
+  return(d1)
+}
+```
